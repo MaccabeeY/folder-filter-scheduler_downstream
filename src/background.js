@@ -138,11 +138,12 @@ async function getFiltaQuillaMessagesByRawHeaders(uriString) {
 
 /** Iterate every message in a folder, transparently following pagination. */
 async function* messagesInFolder(folderId) {
-  await getFiltaQuillaMessagesByRawHeaders(folderId).then(subjects => {
+/*  await getFiltaQuillaMessagesByRawHeaders(folderId).then(subjects => {
     if (subjects.length > 0) console.log("Subjects fetched directly from raw streams:", subjects);
-  });
+  });*/
 
-  let page = await messenger.messages.query({ folderId, autoPaginationTimeout: 0 });
+//  let page = await messenger.messages.query({ folderId, autoPaginationTimeout: 0 });
+  let page = await messenger.messages.list(folderId);
 
   while (page) {
     for (const m of page.messages) yield m;
