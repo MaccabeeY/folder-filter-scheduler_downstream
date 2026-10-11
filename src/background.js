@@ -137,7 +137,7 @@ async function getFiltaQuillaMessagesByRawHeaders(uriString) {
 
 
 /** Iterate every message in a folder, transparently following pagination. */
-async function* messagesInFolder(folderId) {
+async function messagesInFolder(folderId, callback) {
 /*  await getFiltaQuillaMessagesByRawHeaders(folderId).then(subjects => {
     if (subjects.length > 0) console.log("Subjects fetched directly from raw streams:", subjects);
   });*/
@@ -146,7 +146,9 @@ async function* messagesInFolder(folderId) {
   let page = await messenger.messages.list(folderId);
 
   while (page) {
-    for (const m of page.messages) yield m;
+    for (const m of page.messages) {
+      await callback(m);
+    }
     if (!page.id) break;
     page = await messenger.messages.continueList(page.id);
   }
@@ -161,10 +163,11 @@ async function runRule(rule) {
   for (const folderId of rule.folderIds ?? []) {
     const matchedIds = [];
     try {
-      for await (const header of messagesInFolder(folderId)) {
+      // we are merely processing 'headers' ourselves via callback instead of the debugger-breaking black box of 'yield' generator
+      await messagesInFolder(folderId, async (header) => {
         const message = await normalize(header, fetchFull);
         if (evaluateRule(message, rule)) matchedIds.push(header.id);
-      }
+      });
     } catch (e) {
       warn(`scan failed for folder ${folderId} in rule "${rule.name}"`, e);
       continue;
