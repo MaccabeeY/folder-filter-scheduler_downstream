@@ -22,7 +22,8 @@
     "messagesDelete",
     "messagesUpdate",
     "storage",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "background": {
     "scripts": ["src/background.js"],

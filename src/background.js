@@ -186,7 +186,9 @@ async function runAllRules(reason = 'manual') {
     if (n) log(`rule "${rule.name}" affected ${n} message(s)`);
     total += n;
   }
-  log(`run (${reason}) complete — ${total} message(s) affected across ${rules.length} rule(s)`);
+  let msg = `run (${reason}) complete — ${total} message(s) affected across ${rules.length} rule(s)`;
+  log(msg);
+  if (total > 0) showBalloon(msg);
   return total;
 }
 
@@ -212,6 +214,33 @@ messenger.runtime.onMessage.addListener((msg) => {
 messenger.runtime.onInstalled.addListener(ensureAlarm);
 messenger.runtime.onStartup.addListener(ensureAlarm);
 ensureAlarm();
+
+// Register the content script dynamically upon installation/startup
+messenger.runtime.onInstalled.addListener(async () => {
+  try {
+    await messenger.scripting.messageDisplay.registerScripts([{
+      id: "status-banner",
+      js: ["banner.js"],
+      css: ["banner.css"]
+    }]);
+  } catch (error) {
+    // Suppressed to prevent system console log tracking noise
+  }
+});
+
+/**
+ * Triggers a balloon/toast notification in the lower right corner of the screen.
+ * @param {string} titleText - The bold heading of the balloon.
+ * @param {string} bodyText - The description message underneath.
+ */
+function showBalloon(bodyText, titleText = "Folder Filter Scheduler") {
+  messenger.notifications.create({
+    type: "basic",
+    iconUrl: "icons/icon.svg",
+    title: titleText,
+    message: bodyText
+  });
+}
 
 // Re-exported so the options UI can render the supported field list from one source of truth.
 export { FIELDS };
