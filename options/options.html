@@ -91,6 +91,22 @@
       </div>
     </template>
 
+    <section class="bar">
+      <label>
+        Run every
+        <input id="interval" type="number" min="1" step="1" value="10" /> minutes
+      </label>
+      
+      <!-- New Weekend Preference Switch Element -->
+      <label class="toggle" style="margin-left: 14px;">
+        <input id="send-notifications" type="checkbox" /> Send notifications
+      </label>
+      
+      <span class="spacer"></span>
+      <button id="run-now" type="button">Run all rules now</button>
+      <button id="save" type="button" class="primary">Save</button>
+    </section>
+
     <script type="module" src="options.js"></script>
   </body>
 </html>

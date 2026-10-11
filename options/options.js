@@ -9,6 +9,7 @@ import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
 const $ = (sel, root = document) => root.querySelector(sel);
 const rulesEl = $('#rules');
 const statusEl = $('#status');
+const isUIContext = rulesEl !== null && statusEl !== null;
 
 let folders = []; // [{ id, label }]
 
@@ -142,10 +143,14 @@ function collectConfig() {
       action,
     };
   });
-  return { intervalMinutes: Math.max(1, Number($('#interval').value) || 10), rules };
+  return {
+    intervalMinutes: Math.max(1, Number($('#interval').value) || 10), rules,
+    sendNotifications: $('#send-notifications').checked ? "1" : "0"
+  };
 }
 
 function flash(message, isError = false) {
+  if (!isUIContext) return; 
   statusEl.textContent = message;
   statusEl.style.color = isError ? 'var(--danger)' : 'var(--accent)';
 }
@@ -154,7 +159,7 @@ async function save() {
   const config = collectConfig();
   await messenger.storage.local.set({ config });
   await messenger.runtime.sendMessage({ command: 'reschedule' });
-  flash('Saved. Schedule updated.');
+  flash('Saved. Options updated.');
 }
 
 function exportRules() {
@@ -212,7 +217,9 @@ async function importRules(file) {
 //  if (allowlist?.length) $('#allowlist').value = allowlist.join('\n');
   if (intervalMinutes) $('#interval').value = intervalMinutes;
 //  if (advanced) fillAdvanced(advanced);
-
+  if (data?.sendNotifications !== undefined) {
+    $('#send-notifications').checked = data.sendNotifications === "1";
+  }
   const skipped = problems.length > 0 ? ` Skipped: ${problems.join('; ')}.` : '';
   flash(
     `Imported ${rules.length} rule(s) — review them, then press Save to keep them.${skipped}${dupeNote}`,
@@ -234,12 +241,13 @@ async function init() {
   await loadFolders();
   const { config } = await messenger.storage.local.get({ config: null });
   $('#interval').value = config?.intervalMinutes ?? 10;
+  $('#send-notifications').checked = config?.sendNotifications === "1";
   const rules = config?.rules?.length ? config.rules : [{}];
   for (const r of rules) renderRule(r);
 
   $('#add-rule').addEventListener('click', () => renderRule({}));
   $('#save').addEventListener('click', () => save().catch((e) => flash(e.message, true)));
-  $('#run-now').addEventListener('click', runNow);
+  $('#run-now').addEventListener('click', runNow);x
   $('#export').addEventListener('click', () => {
     try {
       exportRules();
@@ -260,4 +268,11 @@ async function init() {
   }
 }
 
-init().catch((e) => flash(e.message, true));
+export async function getsendNotifications() {
+  const { config } = await messenger.storage.local.get({ config: null });
+  return config?.sendNotifications;
+}
+
+if (isUIContext) {
+ init().catch((e) => console.log(e.message));
+}
