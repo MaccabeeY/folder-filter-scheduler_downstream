@@ -247,7 +247,7 @@ async function init() {
 
   $('#add-rule').addEventListener('click', () => renderRule({}));
   $('#save').addEventListener('click', () => save().catch((e) => flash(e.message, true)));
-  $('#run-now').addEventListener('click', runNow);x
+  $('#run-now').addEventListener('click', runNow);
   $('#export').addEventListener('click', () => {
     try {
       exportRules();
