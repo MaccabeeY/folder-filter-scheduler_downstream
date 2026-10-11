@@ -1,0 +1,378 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/**
+ * Import and export of rule sets.
+ *
+ * Pure and free of extension APIs, like matcher.js and domains.js, so the
+ * validation below is unit-testable under plain Node.
+ *
+ * Everything arriving through import is treated as untrusted: a rule file can
+ * carry an action that deletes mail, so each rule is rebuilt field by field from
+ * known-good values rather than merged in as-is. Anything unrecognised is
+ * dropped and reported instead of being stored and quietly misbehaving later.
+ */
+
+import { ACTIONS_BY_ID, actionsOf, orderActions } from './actions.js';
+import { OPERATORS, DOMAIN_IN_LIST, FIELDS, AGE_FIELD, AGE_OPERATORS, IN_ADDRESS_BOOK, ageDays } from './matcher.js';
+import { ADDRESS_BOOK_FIELDS, ALL_ADDRESS_BOOKS } from './contacts.js';
+import { DEFAULT_ALLOWLIST, normalizeDomain, parseDomainList } from './domains.js';
+import { sanitizeAdvanced } from './settings.js';
+
+export const EXPORT_FORMAT = 'folder-filter-scheduler/rules';
+export const EXPORT_VERSION = 1;
+
+const KNOWN_FIELDS = new Set(FIELDS);
+const KNOWN_OPERATORS = new Set([
+  ...Object.keys(OPERATORS),
+  DOMAIN_IN_LIST,
+  IN_ADDRESS_BOOK,
+  ...Object.keys(AGE_OPERATORS),
+]);
+const AGE_OPERATOR_SET = new Set(Object.keys(AGE_OPERATORS));
+
+/**
+ * A canonical string capturing what a rule *does*, ignoring cosmetics.
+ *
+ * Name and enabled state are excluded: renaming a rule does not make it a
+ * different rule. Folder ids, conditions, domain lists, and multi-field sets are
+ * all sorted, so two rules that behave identically fingerprint identically no
+ * matter what order their parts were written in.
+ */
+export function ruleFingerprint(rule) {
+  const conditions = (rule?.conditions ?? [])
+    .map((c) => {
+      const listed = Array.isArray(c?.fields) && c.fields.length > 0
+        ? c.fields
+        : [c?.field].filter(Boolean);
+      const shape = {
+        fields: listed.map((f) => String(f).toLowerCase()).sort(),
+        operator: String(c?.operator ?? ''),
+        negate: c?.negate === true,
+      };
+      if (c?.operator === DOMAIN_IN_LIST) {
+        shape.domains = [...(c.domains ?? [])].map(normalizeDomain).filter(Boolean).sort();
+      } else if (AGE_OPERATOR_SET.has(shape.operator)) {
+        shape.days = ageDays(c);
+      } else if (shape.operator === IN_ADDRESS_BOOK) {
+        shape.addressBookId = String(c?.addressBookId ?? '');
+      } else {
+        shape.value = String(c?.value ?? '');
+      }
+      return JSON.stringify(shape, Object.keys(shape).sort());
+    })
+    .sort();
+
+  // Sorted: within a rule the non-terminal actions commute, and the terminal
+  // one is forced last at run time, so stored order carries no meaning.
+  const actions = actionsOf(rule)
+    .map((a) => {
+      const shape = { type: String(a?.type ?? '') };
+      if (a?.folderId) shape.folderId = String(a.folderId);
+      if (a?.tagKey) shape.tagKey = String(a.tagKey);
+      return JSON.stringify(shape, Object.keys(shape).sort());
+    })
+    .sort();
+
+  return JSON.stringify({
+    actions,
+    conditions,
+    folderIds: [...(rule?.folderIds ?? [])].map(String).sort(),
+    match: rule?.match === 'all' ? 'all' : 'any',
+  });
+}
+
+/**
+ * Short, stable label for a rule's fingerprint (FNV-1a). Shown to the user when
+ * an import is skipped. Duplicate detection compares the full fingerprint, not
+ * this, so a hash collision cannot cause a rule to be wrongly discarded.
+ */
+export function ruleHash(rule) {
+  let h = 0x811c9dc5;
+  for (const ch of ruleFingerprint(rule)) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+/**
+ * Filename for an export, stamped with local date and time.
+ *
+ * Local rather than UTC because the user is naming a file on their own machine,
+ * and the field order sorts chronologically in a file listing. No colons: they
+ * are illegal in filenames on Windows and awkward elsewhere.
+ */
+export function exportFilename(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp =
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}`;
+  return `ffs-rules-${stamp}.json`;
+}
+
+/** The object written to a .json export. Run state is deliberately excluded. */
+export function buildExport(config, { exportedAt = new Date() } = {}) {
+  return {
+    format: EXPORT_FORMAT,
+    version: EXPORT_VERSION,
+    exportedAt: exportedAt.toISOString(),
+    intervalMinutes: config?.intervalMinutes ?? 10,
+    advanced: sanitizeAdvanced(config?.advanced).settings,
+    allowlist: config?.allowlist ?? [...DEFAULT_ALLOWLIST],
+    rules: (config?.rules ?? []).map((rule) => ({
+      // Informational only: import recomputes it rather than trusting the file.
+      hash: ruleHash(rule),
+      name: rule.name,
+      enabled: rule.enabled !== false,
+      match: rule.match === 'all' ? 'all' : 'any',
+      folderIds: [...(rule.folderIds ?? [])],
+      conditions: (rule.conditions ?? []).map((c) => ({ ...c })),
+      actions: actionsOf(rule).map((a) => ({ ...a })),
+    })),
+  };
+}
+
+function sanitizeFields(raw, problems, where) {
+  const listed = Array.isArray(raw?.fields) && raw.fields.length > 0
+    ? raw.fields
+    : [raw?.field].filter(Boolean);
+  const fields = listed.map((f) => String(f).toLowerCase()).filter((f) => KNOWN_FIELDS.has(f));
+
+  if (fields.length === 0) {
+    problems.push(`${where}: no recognised header field`);
+    return null;
+  }
+  return fields;
+}
+
+function sanitizeCondition(raw, problems, where, knownAddressBookIds) {
+  const operator = String(raw?.operator ?? '');
+  if (!KNOWN_OPERATORS.has(operator)) {
+    problems.push(`${where}: unknown operator "${operator}"`);
+    return null;
+  }
+
+  const fields = sanitizeFields(raw, problems, where);
+  if (!fields) return null;
+
+  const condition = { operator, negate: raw?.negate === true };
+  if (fields.length > 1) condition.fields = fields;
+  else [condition.field] = fields;
+
+  // Age is a pseudo-field with its own operators; the two must travel together.
+  const ageField = fields.length === 1 && fields[0] === AGE_FIELD;
+  const ageOperator = AGE_OPERATOR_SET.has(operator);
+  if (ageField !== ageOperator) {
+    problems.push(`${where}: "${operator}" does not apply to "${fields.join(',')}"`);
+    return null;
+  }
+  if (ageField) {
+    const days = ageDays(raw);
+    if (days === null) {
+      problems.push(`${where}: age needs a whole number of days, 1 or more`);
+      return null;
+    }
+    condition.days = days;
+    return condition;
+  }
+
+  if (operator === IN_ADDRESS_BOOK) {
+    if (!fields.every((f) => ADDRESS_BOOK_FIELDS.includes(f))) {
+      problems.push(`${where}: address book checks only apply to ${ADDRESS_BOOK_FIELDS.join(', ')}`);
+      return null;
+    }
+    const id = typeof raw?.addressBookId === 'string' ? raw.addressBookId.trim() : '';
+    if (!id) {
+      problems.push(`${where}: no address book chosen`);
+      return null;
+    }
+    // Book ids are per profile, like folder ids. An unknown one is kept, not
+    // remapped: it never matches until the user picks a book, whereas quietly
+    // widening it to "all" could turn a small blocklist book into every contact.
+    if (id !== ALL_ADDRESS_BOOKS && knownAddressBookIds && !knownAddressBookIds.has(id)) {
+      problems.push(`${where}: address book not in this profile, choose one before saving`);
+    }
+    condition.addressBookId = id;
+    return condition;
+  }
+
+  if (operator === DOMAIN_IN_LIST) {
+    // Re-validate every domain: an imported list must not be able to smuggle in
+    // a blank or malformed entry that would match every message.
+    const { domains, invalid } = parseDomainList((raw?.domains ?? []).join('\n'));
+    if (invalid.length > 0) problems.push(`${where}: dropped ${invalid.length} invalid domain(s)`);
+    if (domains.length === 0) {
+      problems.push(`${where}: domain list is empty`);
+      return null;
+    }
+    condition.domains = domains;
+  } else {
+    condition.value = String(raw?.value ?? '');
+    if (condition.value === '') {
+      problems.push(`${where}: empty value`);
+      return null;
+    }
+  }
+  return condition;
+}
+
+/**
+ * Rebuild a rule's action list field by field, in execution order.
+ *
+ * At most one terminal action survives. A rule that both moved and trashed the
+ * same message would fail on the second step, because the first invalidates the
+ * message ids, so the extras are dropped here and reported rather than left to
+ * throw during a scheduled run.
+ */
+function sanitizeActions(raw, problems, where) {
+  const listed = actionsOf(raw);
+  if (listed.length === 0) {
+    problems.push(`${where}: no action, rule skipped`);
+    return null;
+  }
+
+  const actions = [];
+  let terminal = null;
+  for (const candidate of orderActions(listed)) {
+    const def = ACTIONS_BY_ID[candidate?.type];
+    if (!def) {
+      problems.push(`${where}: unknown action "${candidate?.type ?? ''}", dropped`);
+      continue;
+    }
+    if (def.needsFolder && !candidate.folderId) {
+      problems.push(`${where}: "${def.id}" needs a destination folder, dropped`);
+      continue;
+    }
+    if (def.needsTag && !candidate.tagKey) {
+      problems.push(`${where}: "${def.id}" needs a tag, dropped`);
+      continue;
+    }
+    if (def.terminal) {
+      if (terminal) {
+        problems.push(`${where}: "${def.id}" dropped, a rule can only end in one action that moves or deletes (kept "${terminal}")`);
+        continue;
+      }
+      terminal = def.id;
+    }
+    const action = { type: def.id };
+    if (def.needsFolder) action.folderId = String(candidate.folderId);
+    if (def.needsTag) action.tagKey = String(candidate.tagKey);
+    // Exact repeats are noise, not a mistake worth reporting.
+    if (actions.some((a) => a.type === action.type && a.folderId === action.folderId && a.tagKey === action.tagKey)) {
+      continue;
+    }
+    actions.push(action);
+  }
+
+  if (actions.length === 0) {
+    problems.push(`${where}: no usable action, rule skipped`);
+    return null;
+  }
+  return actions;
+}
+
+function sanitizeRule(raw, index, problems, knownFolderIds, knownAddressBookIds) {
+  const where = `Rule ${index + 1}${raw?.name ? ` ("${raw.name}")` : ''}`;
+
+  const actions = sanitizeActions(raw, problems, where);
+  if (!actions) return null;
+
+  const conditions = (Array.isArray(raw?.conditions) ? raw.conditions : [])
+    .map((c, i) => sanitizeCondition(c, problems, `${where} condition ${i + 1}`, knownAddressBookIds))
+    .filter(Boolean);
+
+  // A rule with no usable conditions is dropped rather than imported inert.
+  if (conditions.length === 0) {
+    problems.push(`${where}: no usable conditions, rule skipped`);
+    return null;
+  }
+
+  let folderIds = Array.isArray(raw?.folderIds) ? raw.folderIds.map(String) : [];
+  if (knownFolderIds) {
+    const missing = folderIds.filter((id) => !knownFolderIds.has(id));
+    if (missing.length > 0) {
+      problems.push(`${where}: ${missing.length} folder(s) not in this profile, removed`);
+      folderIds = folderIds.filter((id) => knownFolderIds.has(id));
+    }
+  }
+
+  return {
+    name: String(raw?.name ?? '').trim() || 'Imported rule',
+    // Imported rules always get fresh ids so they cannot collide with existing
+    // rules or inherit another profile's run state.
+    enabled: raw?.enabled !== false,
+    match: raw?.match === 'all' ? 'all' : 'any',
+    folderIds,
+    conditions,
+    actions,
+  };
+}
+
+/**
+ * Validate a parsed export file. Returns the rules worth keeping plus a
+ * human-readable list of everything that was rejected and why.
+ */
+export function sanitizeImport(data, { knownFolderIds, knownAddressBookIds, existingRules } = {}) {
+  const problems = [];
+  const duplicates = [];
+  const empty = { rules: [], duplicates, allowlist: null, intervalMinutes: null, advanced: null };
+
+  if (!data || typeof data !== 'object') {
+    return { ...empty, problems: ['Not a valid JSON object'] };
+  }
+  if (data.format && data.format !== EXPORT_FORMAT) {
+    problems.push(`Unexpected format "${data.format}"`);
+  }
+  if (!Array.isArray(data.rules)) {
+    return { ...empty, problems: [...problems, 'No rules array found'] };
+  }
+
+  const known = knownFolderIds ? new Set(knownFolderIds) : null;
+  const knownBooks = knownAddressBookIds ? new Set(knownAddressBookIds) : null;
+
+  // Fingerprint what is already present so re-importing the same file is a
+  // no-op rather than a way to accumulate duplicate rules.
+  const seen = new Map();
+  for (const rule of existingRules ?? []) {
+    seen.set(ruleFingerprint(rule), rule.name ?? 'an existing rule');
+  }
+
+  const rules = [];
+  for (const [i, raw] of data.rules.entries()) {
+    const rule = sanitizeRule(raw, i, problems, known, knownBooks);
+    if (!rule) continue;
+
+    const fingerprint = ruleFingerprint(rule);
+    if (seen.has(fingerprint)) {
+      duplicates.push({ name: rule.name, hash: ruleHash(rule), matches: seen.get(fingerprint) });
+      continue;
+    }
+    seen.set(fingerprint, rule.name);
+    rules.push(rule);
+  }
+
+  let allowlist = null;
+  if (Array.isArray(data.allowlist)) {
+    const parsed = parseDomainList(data.allowlist.join('\n'));
+    allowlist = parsed.domains;
+    if (parsed.invalid.length > 0) {
+      problems.push(`Allowlist: dropped ${parsed.invalid.length} invalid domain(s)`);
+    }
+  }
+
+  const interval = Number(data.intervalMinutes);
+  const intervalMinutes = Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : null;
+
+  // Absent in files written before 0.3.2, and left alone rather than reset to
+  // defaults: an import should not quietly retune someone's scan engine.
+  let advanced = null;
+  if (data.advanced && typeof data.advanced === 'object') {
+    const sanitized = sanitizeAdvanced(data.advanced);
+    advanced = sanitized.settings;
+    problems.push(...sanitized.problems.map((p) => `Advanced: ${p}`));
+  }
+
+  return { rules, duplicates, allowlist, intervalMinutes, advanced, problems };
+}
