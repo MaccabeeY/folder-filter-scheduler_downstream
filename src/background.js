@@ -343,7 +343,7 @@ async function normalize(messageHeader, fetchFull, headerReads) {
     _header: messageHeader,
   };
 }
-
+  
 /** Walk any paginated MessageList (a query result or a menu selection). */
 async function* eachMessage(list) {
   let page = list;
@@ -354,12 +354,11 @@ async function* eachMessage(list) {
   }
 }
 
-/** Iterate a folder, optionally bounded by Date on either side. */
-async function* messagesInFolder(folderId, { fromDate, toDate } = {}) {
-  const query = { folderId, autoPaginationTimeout: 0 };
-  if (fromDate instanceof Date) query.fromDate = fromDate;
-  if (toDate instanceof Date) query.toDate = toDate;
-  yield* eachMessage(await messenger.messages.query(query));
+/** Iterate a folder completely using the local .msf file inventory */
+async function* messagesInFolder(folderId) {
+  // Bypasses the global database entirely.
+  // This reads the direct inventory from the .msf file at full machine speed.
+  yield* eachMessage(await messenger.messages.list(folderId));
 }
 
 /**
