@@ -11,9 +11,12 @@
  *
  * A normalized message is `{ fields: { <lowercased-name>: string[] } }`.
  * Header-like fields ("from", "subject", "reply-to", "x-anything") map to the
- * raw header values exactly as Thunderbird's `messages.getFull()` returns them
+ * raw header values exactly as Thunderbird's header APIs return them
  * (lowercased keys, array values because a header may legally repeat).
  */
+
+import { addressesFromHeaderValue, domainsFromHeaderValue, matchesDomainList, normalizeDomain } from './domains.js';
+import { normalizeAddress } from './contacts.js';
 
 /** Operators are positive predicates; negation is a separate flag on a condition. */
 export const OPERATORS = Object.freeze({
@@ -31,6 +34,34 @@ export const OPERATORS = Object.freeze({
   },
 });
 
+/**
+ * The set-lookup operator, kept out of OPERATORS on purpose: those entries are
+ * `(value, needle)` string predicates and cannot express a lookup against a
+ * whole list. evaluateCondition branches on it before reaching them.
+ */
+export const DOMAIN_IN_LIST = 'domainInList';
+
+/**
+ * "Sender is in an address book". Like DOMAIN_IN_LIST it is a set lookup, not a
+ * string predicate. Shape: `{ field, operator: 'inAddressBook', addressBookId,
+ * negate }`, where addressBookId is a book id or ALL_ADDRESS_BOOKS. The address
+ * Sets themselves are loaded by the background script and passed in through
+ * evaluateRule's options, which keeps this module free of extension APIs.
+ */
+export const IN_ADDRESS_BOOK = 'inAddressBook';
+
+/**
+ * The message-age pseudo-field. Not a header: it compares the message date
+ * against "now". Its operators live outside OPERATORS for the same reason as
+ * DOMAIN_IN_LIST, they are not string predicates. Shape:
+ * `{ field: 'age', operator: 'olderThan' | 'newerThan', days: N, negate }`.
+ */
+export const AGE_FIELD = 'age';
+export const AGE_OPERATORS = Object.freeze({
+  olderThan: 'olderThan',
+  newerThan: 'newerThan',
+});
+
 export const FIELDS = Object.freeze([
   'from',
   'to',
@@ -39,6 +70,7 @@ export const FIELDS = Object.freeze([
   'reply-to',
   'list-id',
   'sender',
+  AGE_FIELD,
 ]);
 
 /**
@@ -47,7 +79,46 @@ export const FIELDS = Object.freeze([
  * Everything else (reply-to, list-id, sender, arbitrary headers) needs a
  * `messages.getFull()`, which on a non-offline IMAP folder hits the network.
  */
-export const CHEAP_FIELDS = Object.freeze(['from', 'to', 'cc', 'subject']);
+export const CHEAP_FIELDS = Object.freeze(['from', 'to', 'cc', 'subject', AGE_FIELD]);
+
+const foldCase = (s) => (s ?? '').toString().toLowerCase();
+
+/**
+ * The header(s) a condition reads. `fields` (plural) lets one domain-list
+ * condition watch both Reply-To and From, which matters because most spam
+ * carries only one of the two. Falls back to the singular `field` so rules
+ * written before this existed keep working.
+ */
+export function isAgeCondition(condition) {
+  return foldCase(condition?.field) === AGE_FIELD;
+}
+
+/**
+ * The day count of an age condition, or null when it is unusable. Anything
+ * that is not a whole number of at least one day never matches: an age
+ * condition with a blank or zero count on an `any` rule would otherwise be
+ * true for every message.
+ */
+export function ageDays(condition) {
+  const n = Number(condition?.days);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+
+/** Address-book ids a rule needs loaded before it can be evaluated. */
+export function addressBookIdsOf(rule) {
+  const ids = new Set();
+  for (const c of rule?.conditions ?? []) {
+    if (c?.operator === IN_ADDRESS_BOOK && typeof c.addressBookId === 'string' && c.addressBookId) {
+      ids.add(c.addressBookId);
+    }
+  }
+  return [...ids];
+}
+
+export function fieldsOf(condition) {
+  if (Array.isArray(condition?.fields) && condition.fields.length > 0) return condition.fields;
+  return condition?.field ? [condition.field] : [];
+}
 
 /**
  * True when a rule references at least one header that is NOT cheaply
@@ -56,10 +127,13 @@ export const CHEAP_FIELDS = Object.freeze(['from', 'to', 'cc', 'subject']);
  */
 export function requiresFullMessage(rule) {
   const cheap = new Set(CHEAP_FIELDS);
-  return (rule?.conditions ?? []).some((c) => !cheap.has((c.field || '').toLowerCase()));
+  return (rule?.conditions ?? []).some((c) => {
+    // A condition naming no field at all is treated as expensive, erring toward
+    // fetching rather than silently evaluating against nothing.
+    const fields = fieldsOf(c);
+    return (fields.length > 0 ? fields : ['']).some((f) => !cheap.has(foldCase(f)));
+  });
 }
-
-const foldCase = (s) => (s ?? '').toString().toLowerCase();
 
 function valuesFor(message, field) {
   const key = foldCase(field);
@@ -76,7 +150,77 @@ function valuesFor(message, field) {
  * A field that is entirely absent counts as a single empty string, so
  * "does not contain X" is true for a message that lacks the header.
  */
-export function evaluateCondition(message, condition) {
+/**
+ * Evaluate a `domainInList` condition: does any address in the chosen header
+ * sit in (or under) the condition's domain list?
+ *
+ * An empty list NEVER matches. Without this a blank blocklist on a `match:
+ * "any"` rule would be true for every message, and a rule that deletes would
+ * empty the folder on the next scheduled run.
+ */
+function evaluateDomainCondition(message, condition) {
+  const domains = Array.isArray(condition.domains) ? condition.domains : [];
+  const list = new Set(domains.map(normalizeDomain).filter(Boolean));
+  if (list.size === 0) return false;
+
+  const anySatisfied = fieldsOf(condition).some((field) =>
+    valuesFor(message, field).some((value) =>
+      domainsFromHeaderValue(value).some((domain) => matchesDomainList(domain, list)),
+    ),
+  );
+  return condition.negate ? !anySatisfied : anySatisfied;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Evaluate an age condition. `message.date` is the Date header as Thunderbird
+ * indexed it, which is what the native "Age in Days" filter and the folder
+ * retention policy use too. A message with no usable date never matches.
+ */
+function evaluateAgeCondition(message, condition, now) {
+  const days = ageDays(condition);
+  const date = message?.date instanceof Date ? message.date : new Date(message?.date ?? NaN);
+  if (days === null || Number.isNaN(date.getTime())) return false;
+
+  const ageMs = now.getTime() - date.getTime();
+  let satisfied;
+  if (condition.operator === AGE_OPERATORS.olderThan) satisfied = ageMs >= days * DAY_MS;
+  else if (condition.operator === AGE_OPERATORS.newerThan) satisfied = ageMs < days * DAY_MS;
+  else throw new Error(`Unknown age operator: ${condition.operator}`);
+  return condition.negate ? !satisfied : satisfied;
+}
+
+/**
+ * Evaluate an address-book condition.
+ *
+ * NEVER matches, negated or not, when the book could not be read, is empty, or
+ * the message names no usable address. "From is not in my address book" is
+ * the shape people pair with Trash, and an unreadable book would otherwise
+ * make every sender a stranger and empty the folder.
+ */
+function evaluateAddressBookCondition(message, condition, addressBooks) {
+  const book = addressBooks?.get?.(condition.addressBookId);
+  if (!(book instanceof Set) || book.size === 0) return false;
+
+  const addresses = fieldsOf(condition)
+    .flatMap((field) => valuesFor(message, field))
+    .flatMap((value) => addressesFromHeaderValue(value))
+    .map(normalizeAddress)
+    .filter(Boolean);
+  if (addresses.length === 0) return false;
+
+  const anyKnown = addresses.some((a) => book.has(a));
+  return condition.negate ? !anyKnown : anyKnown;
+}
+
+export function evaluateCondition(message, condition, { now = new Date(), addressBooks } = {}) {
+  if (isAgeCondition(condition)) return evaluateAgeCondition(message, condition, now);
+  if (condition.operator === IN_ADDRESS_BOOK) {
+    return evaluateAddressBookCondition(message, condition, addressBooks);
+  }
+  if (condition.operator === DOMAIN_IN_LIST) return evaluateDomainCondition(message, condition);
+
   const predicate = OPERATORS[condition.operator];
   if (!predicate) {
     throw new Error(`Unknown operator: ${condition.operator}`);
@@ -94,10 +238,10 @@ export function evaluateCondition(message, condition) {
  * A rule with no conditions never matches — guards against an empty rule
  * silently swallowing an entire folder.
  */
-export function evaluateRule(message, rule) {
+export function evaluateRule(message, rule, options = {}) {
   const conditions = rule && Array.isArray(rule.conditions) ? rule.conditions : [];
   if (conditions.length === 0) return false;
 
-  const results = conditions.map((c) => evaluateCondition(message, c));
+  const results = conditions.map((c) => evaluateCondition(message, c, options));
   return rule.match === 'all' ? results.every(Boolean) : results.some(Boolean);
 }

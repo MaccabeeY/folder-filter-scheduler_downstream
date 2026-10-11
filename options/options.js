@@ -4,6 +4,7 @@
 
 import { FIELDS } from '../src/matcher.js';
 import { ACTIONS, ACTIONS_BY_ID } from '../src/actions.js';
+import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const rulesEl = $('#rules');
@@ -156,6 +157,69 @@ async function save() {
   flash('Saved. Schedule updated.');
 }
 
+function exportRules() {
+  const now = new Date();
+  const blob = new Blob([JSON.stringify(buildExport(collectConfig(), { exportedAt: now }), null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = exportFilename(now);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  flash(`Exported to ${exportFilename(now)}. Unsaved edits on this page are included.`);
+}
+
+/**
+ * Import is deliberately staged: rules are validated and rendered into the page,
+ * but nothing is stored until the user presses Save. So a bad file can be
+ * abandoned by reloading, and can never start deleting mail on its own.
+ */
+async function importRules(file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (e) {
+    flash(`Could not read ${file.name}: ${e.message}`, true);
+    return;
+  }
+
+  const { rules, duplicates, allowlist, intervalMinutes, advanced, problems } = sanitizeImport(data, {
+    knownFolderIds: folders.map((f) => f.id),
+    // Only checkable with access; otherwise ids are kept and checked on use.
+//    knownAddressBookIds: bookAccess ? addressBooks.map((b) => b.id) : undefined,
+    // Compare against what is on the page, including unsaved edits, so
+    // re-importing the same file does not pile up duplicate rules.
+    existingRules: collectConfig().rules,
+  });
+
+  const dupeNote = duplicates.length
+    ? ` Already present, skipped: ${duplicates
+        .map((d) => `“${d.name}” (${d.hash}, same as “${d.matches}”)`)
+        .join(', ')}.`
+    : '';
+
+  if (rules.length === 0) {
+    const why = problems.join('; ') || (duplicates.length ? '' : 'The file contained no usable rules.');
+    flash(`Nothing new to import.${why ? ` ${why}.` : ''}${dupeNote}`, !duplicates.length);
+    return;
+  }
+
+  for (const rule of rules) renderRule(rule);
+//  if (allowlist?.length) $('#allowlist').value = allowlist.join('\n');
+  if (intervalMinutes) $('#interval').value = intervalMinutes;
+//  if (advanced) fillAdvanced(advanced);
+
+  const skipped = problems.length > 0 ? ` Skipped: ${problems.join('; ')}.` : '';
+  flash(
+    `Imported ${rules.length} rule(s) — review them, then press Save to keep them.${skipped}${dupeNote}`,
+    problems.length > 0,
+  );
+}
+
 async function runNow() {
   flash('Running…');
   try {
@@ -176,6 +240,20 @@ async function init() {
   $('#add-rule').addEventListener('click', () => renderRule({}));
   $('#save').addEventListener('click', () => save().catch((e) => flash(e.message, true)));
   $('#run-now').addEventListener('click', runNow);
+  $('#export').addEventListener('click', () => {
+    try {
+      exportRules();
+    } catch (e) {
+      flash(`Export failed: ${e.message}`, true);
+    }
+  });
+  $('#import').addEventListener('click', () => $('#import-file').click());
+  $('#import-file').addEventListener('change', (event) => {
+    const [file] = event.target.files ?? [];
+    // Reset so re-picking the same file fires change again.
+    event.target.value = '';
+    if (file) importRules(file).catch((e) => flash(`Import failed: ${e.message}`, true));
+  });
 
   if (folders.length === 0) {
     flash('No folders found — check the “accountsRead” permission and reload the add-on.', true);

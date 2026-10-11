@@ -66,6 +66,34 @@ export const ACTIONS = [
 
 export const ACTIONS_BY_ID = Object.freeze(Object.fromEntries(ACTIONS.map((a) => [a.id, a])));
 
+export const isTerminalAction = (action) => ACTIONS_BY_ID[action?.type]?.terminal === true;
+
+/**
+ * A rule's actions, oldest schema included.
+ *
+ * Rules stored before 0.3.2 carry a single `action` object. Everything reads
+ * rules through this helper so an un-migrated rule, an imported file, or an
+ * export from an older version all behave the same.
+ */
+export function actionsOf(rule) {
+  if (Array.isArray(rule?.actions) && rule.actions.length > 0) return rule.actions;
+  return rule?.action ? [rule.action] : [];
+}
+
+/**
+ * Execution order: everything that leaves the message where it is runs first,
+ * and the one action that consumes it runs last.
+ *
+ * This is derived rather than taken from the user's ordering because a move
+ * invalidates the message ids: "move to Friends, then tag as Friends" would
+ * quietly tag nothing. Unknown types are left in place so `runAction` can throw
+ * on them instead of them being silently dropped here.
+ */
+export function orderActions(actions) {
+  const list = Array.isArray(actions) ? actions : [];
+  return [...list.filter((a) => !isTerminalAction(a)), ...list.filter(isTerminalAction)];
+}
+
 /** Execute a configured action against the matched message ids. No-op on empty input. */
 export async function runAction(messenger, ids, action) {
   if (!ids || ids.length === 0) return;
