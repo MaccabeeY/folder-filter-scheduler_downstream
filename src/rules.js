@@ -132,6 +132,7 @@ export function buildExport(config, { exportedAt = new Date() } = {}) {
     version: EXPORT_VERSION,
     exportedAt: exportedAt.toISOString(),
     intervalMinutes: config?.intervalMinutes ?? 10,
+    sendNotifications: config?.sendNotifications,
     advanced: sanitizeAdvanced(config?.advanced).settings,
     allowlist: config?.allowlist ?? [...DEFAULT_ALLOWLIST],
     rules: (config?.rules ?? []).map((rule) => ({

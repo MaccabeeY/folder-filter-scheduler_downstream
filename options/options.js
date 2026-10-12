@@ -995,10 +995,10 @@ function collectConfig(rejected = []) {
   rejected.push(...advanced.problems);
   return {
     intervalMinutes: Math.max(1, Number($('#interval').value) || 10),
+    sendNotifications: $('#send-notifications').checked ? "1" : "0",
     advanced: advanced.settings,
     rules,
-    allowlist,
-    sendNotifications: $('#send-notifications').checked ? "1" : "0"
+    allowlist
   };
 }
 
