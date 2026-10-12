@@ -99,3 +99,8 @@ export function isDefaultAdvanced(settings) {
 export function alarmNeedsReset(alarm, minutes) {
   return !alarm || alarm.periodInMinutes !== minutes;
 }
+
+export async function getsendNotifications() {
+  const { config } = await messenger.storage.local.get({ config: null });
+  return config?.sendNotifications;
+}

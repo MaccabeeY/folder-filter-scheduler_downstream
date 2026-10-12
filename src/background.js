@@ -7,7 +7,7 @@ import { ALL_ADDRESS_BOOKS, addressSetFromVCards } from './contacts.js';
 import { LOG_CAP, appendEntries, buildReport, makeEntry } from './diagnostics.js';
 import { actionsOf, runActions } from './actions.js';
 import { planScan, queryBoundsFor, stampScan } from './scan.js';
-import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced } from './settings.js';
+import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced, getsendNotifications  } from './settings.js';
 import { createRunner } from './runner.js';
 import { createHeaderReads } from './headers.js';
 import { resolveRuleFolders } from './folders.js';
@@ -521,12 +521,11 @@ async function runAllRules(
   }
 
   await saveRunState(runState);
-  logUnless(
-    quietRun && total === 0,
-    `run (${reason}) complete: ${total} message(s) affected across ` +
-      `${selected.length} of ${rules.length} rule(s)`,
-  );
+  let msg = `run (${reason}) complete: ${total} message(s) affected across ` +
+      `${selected.length} of ${rules.length} rule(s)`;
+  logUnless( quietRun && total === 0, msg);
   await flushLog();
+  if (total > 0) sendBalloon(msg, `Folder Filter Scheduler processed ${total} message(s)`);
   return total;
 }
 
@@ -971,6 +970,21 @@ messenger.runtime.onStartup.addListener(() => {
 });
 applySettings();
 registerMenu();
+
+/**
+ * Triggers a balloon/toast notification in the lower right corner of the screen.
+ * @param {string} titleText - The bold heading of the balloon.
+ * @param {string} bodyText - The description message underneath.
+ */
+async function sendBalloon(bodyText, titleText = "Folder Filter Scheduler") {
+  if (await getsendNotifications() === "1")
+    messenger.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon.svg",
+      title: titleText,
+      message: bodyText
+    });
+}
 
 // Re-exported so the options UI can render the supported field list from one source of truth.
 export { FIELDS };

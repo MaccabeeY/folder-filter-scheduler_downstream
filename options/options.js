@@ -27,6 +27,7 @@ import { DEFAULT_ALLOWLIST, parseDomainList } from '../src/domains.js';
 import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
 import { folderDepth, folderMatchesFilter, resolveRuleFolders, treeGuides } from '../src/folders.js';
 import { describeCron, nextRun, parseCron } from '../src/cron.js';
+import { getsendNotifications  } from '../src/settings.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -997,6 +998,7 @@ function collectConfig(rejected = []) {
     advanced: advanced.settings,
     rules,
     allowlist,
+    sendNotifications: $('#send-notifications').checked ? "1" : "0"
   };
 }
 
@@ -1215,6 +1217,9 @@ async function importRules(file) {
   if (allowlist?.length) $('#allowlist').value = allowlist.join('\n');
   if (intervalMinutes) $('#interval').value = intervalMinutes;
   if (advanced) fillAdvanced(advanced);
+  if (data?.sendNotifications !== undefined) {
+    $('#send-notifications').checked = data.sendNotifications === "1";
+  }
 
   const skipped = problems.length > 0 ? ` Skipped: ${problems.join('; ')}.` : '';
   flash(
@@ -1262,6 +1267,7 @@ async function init() {
   await loadTags();
   const { config } = await messenger.storage.local.get({ config: null });
   $('#interval').value = config?.intervalMinutes ?? 10;
+  $('#send-notifications').checked = config?.sendNotifications === "1";
   const rules = config?.rules?.length ? config.rules : [{}];
 
   // On a first visit with many rules, start collapsed: a folder multi-select

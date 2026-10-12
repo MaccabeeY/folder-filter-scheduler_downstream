@@ -8,7 +8,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "folder-filter-scheduler@kayhan.dev",
-      "strict_min_version": "147.0"
+      "strict_min_version": "128.0"
     }
   },
   "icons": {
@@ -23,7 +23,8 @@
     "messagesUpdate",
     "menus",
     "storage",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "optional_permissions": ["addressBooks", "messagesTagsList"],
   "background": {
