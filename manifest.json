@@ -2,13 +2,13 @@
   "manifest_version": 3,
   "name": "__MSG_extensionName__",
   "description": "__MSG_extensionDescription__",
-  "version": "0.3.6",
+  "version": "0.3.6.1",
   "author": "Kayhan",
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
-      "id": "folder-filter-scheduler@kayhan.dev",
-      "strict_min_version": "147.0"
+      "id": "folder-filter-scheduler@kayhan.dev.tb128",
+      "strict_min_version": "128.0"
     }
   },
   "icons": {
@@ -23,7 +23,8 @@
     "messagesUpdate",
     "menus",
     "storage",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "optional_permissions": ["addressBooks", "messagesTagsList"],
   "background": {
