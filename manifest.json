@@ -7,7 +7,7 @@
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
-      "id": "folder-filter-scheduler@kayhan.dev.tb128",
+      "id": "folder-filter-scheduler@kayhan.dev.tb128.0.1.4",
       "strict_min_version": "128.0"
     }
   },
