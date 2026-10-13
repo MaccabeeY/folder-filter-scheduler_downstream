@@ -971,6 +971,11 @@ messenger.runtime.onStartup.addListener(() => {
 applySettings();
 registerMenu();
 
+// Listen for the main window toolbar button click
+messenger.action.onClicked.addListener(async (tab) => {
+    return runAllRules('manual').then((affected) => ({ ok: true, affected }));
+});
+
 /**
  * Triggers a balloon/toast notification in the lower right corner of the screen.
  * @param {string} titleText - The bold heading of the balloon.
