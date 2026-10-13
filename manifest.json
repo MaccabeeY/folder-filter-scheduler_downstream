@@ -7,7 +7,7 @@
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
-      "id": "folder-filter-scheduler@kayhan.dev.tb128",
+      "id": "folder-filter-scheduler@kayhan.dev.tb128.main",
       "strict_min_version": "128.0"
     }
   },
@@ -32,11 +32,6 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Rules",
-    "default_icon": "icons/icon.svg",
-    "allowed_spaces": ["mail"]
-  },
-  "message_display_action": {
     "default_title": "Folder Filter Scheduler",
     "default_icon": "icons/icon.svg",
     "default_popup": "popup/popup.html"

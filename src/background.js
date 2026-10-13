@@ -971,9 +971,24 @@ messenger.runtime.onStartup.addListener(() => {
 applySettings();
 registerMenu();
 
-// Listen for the main window toolbar button click
-messenger.action.onClicked.addListener(async (tab) => {
-    return runAllRules('manual').then((affected) => ({ ok: true, affected }));
+// =========================================================================
+// SATELLITE BUTTON TRIGGER RECEIVER
+// =========================================================================
+browser.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  // Security check: Only allow messages from your specific button add-on ID
+  if (sender.id === "folder-filter-scheduler@kayhan.dev.tb128.button") {
+    if (message.action === "RUN_ALL_RULES") {
+      runAllRules('manual')
+        .then((affected) => {
+          sendResponse({ ok: true, affected: affected });
+        })
+        .catch((error) => {
+          console.error("Failed to run rules via remote trigger:", error);
+          sendResponse({ ok: false, error: error.message });
+        });
+      return true;
+    }
+  }
 });
 
 /**
