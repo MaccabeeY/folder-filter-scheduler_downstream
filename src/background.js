@@ -971,6 +971,26 @@ messenger.runtime.onStartup.addListener(() => {
 applySettings();
 registerMenu();
 
+// =========================================================================
+// SATELLITE BUTTON TRIGGER RECEIVER
+// =========================================================================
+browser.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  // Security check: Only allow messages from your specific button add-on ID
+  if (sender.id === "folder-filter-scheduler@kayhan.dev.tb128.button") {
+    if (message.action === "RUN_ALL_RULES") {
+      runAllRules('manual')
+        .then((affected) => {
+          sendResponse({ ok: true, affected: affected });
+        })
+        .catch((error) => {
+          console.error("Failed to run rules via remote trigger:", error);
+          sendResponse({ ok: false, error: error.message });
+        });
+      return true;
+    }
+  }
+});
+
 /**
  * Triggers a balloon/toast notification in the lower right corner of the screen.
  * @param {string} titleText - The bold heading of the balloon.

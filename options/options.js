@@ -1112,7 +1112,7 @@ async function save() {
   flash(
     (rejected.length > 0
       ? `Saved, with ${rejected.length} correction${rejected.length === 1 ? '' : 's'}: ${rejected.join('; ')}.`
-      : 'Saved. Schedule updated.') + note,
+      : 'Saved. Options updated.') + note,
     note !== '',
   );
 }
