@@ -7,7 +7,7 @@ import { ALL_ADDRESS_BOOKS, addressSetFromVCards } from './contacts.js';
 import { LOG_CAP, appendEntries, buildReport, makeEntry } from './diagnostics.js';
 import { actionsOf, runActions } from './actions.js';
 import { planScan, queryBoundsFor, stampScan } from './scan.js';
-import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced, getsendNotifications  } from './settings.js';
+import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced, getSendNotifications  } from './settings.js';
 import { createRunner } from './runner.js';
 import { createHeaderReads } from './headers.js';
 import { resolveRuleFolders } from './folders.js';
@@ -997,7 +997,7 @@ browser.runtime.onMessageExternal.addListener((message, sender, sendResponse) =>
  * @param {string} bodyText - The description message underneath.
  */
 async function sendBalloon(bodyText, titleText = "Folder Filter Scheduler") {
-  if (await getsendNotifications() === "1")
+  if (await getSendNotifications() === "1")
     messenger.notifications.create({
       type: "basic",
       iconUrl: "icons/icon.svg",

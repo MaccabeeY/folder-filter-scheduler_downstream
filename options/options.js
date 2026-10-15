@@ -22,12 +22,11 @@ import {
 import { ADDRESS_BOOK_FIELDS, ALL_ADDRESS_BOOKS } from '../src/contacts.js';
 import { diagnosticsFilename } from '../src/diagnostics.js';
 import { ACTIONS, ACTIONS_BY_ID, actionsOf, isTerminalAction, orderActions } from '../src/actions.js';
-import { ADVANCED_DEFAULTS, sanitizeAdvanced } from '../src/settings.js';
+import { ADVANCED_DEFAULTS, sanitizeAdvanced, decodeImapUtf7 } from '../src/settings.js';
 import { DEFAULT_ALLOWLIST, parseDomainList } from '../src/domains.js';
 import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
 import { folderDepth, folderMatchesFilter, resolveRuleFolders, treeGuides } from '../src/folders.js';
 import { describeCron, nextRun, parseCron } from '../src/cron.js';
-import { getsendNotifications  } from '../src/settings.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -337,7 +336,7 @@ function guideBackground(guide) {
  */
 function paintFolderOption(opt, folder, { filtering = false, covered = false } = {}) {
   const depth = Math.max(1, folder.depth);
-  const name = filtering ? folder.path.replace(/^\//, '') : folder.name;
+  const name = decodeImapUtf7(filtering ? folder.path.replace(/^\//, '') : folder.name);
   const note = covered ? ' · included as a subfolder' : '';
   opt.textContent = `${name}${note}`;
   opt.setAttribute('aria-label', `${name}${note}`);
