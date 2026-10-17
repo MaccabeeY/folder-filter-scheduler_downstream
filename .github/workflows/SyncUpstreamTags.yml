@@ -1,0 +1,23 @@
+name: Sync Upstream Tags
+
+on:
+  push:
+
+jobs:
+  sync-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync Tags from Upstream
+        run: |
+          UPSTREAM_URL="https://github.com/KayhanB21/folder-filter-scheduler.git"
+          PUSH_URL="https://x-access-token:${{ secrets.SYNC_TAGS_SECRET }}@github.com/MaccabeeY/folder-filter-scheduler_downstream.git"
+          
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream --tags
+          git push "$PUSH_URL" --tags --force
