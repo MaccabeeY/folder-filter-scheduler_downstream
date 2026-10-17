@@ -99,3 +99,44 @@ export function isDefaultAdvanced(settings) {
 export function alarmNeedsReset(alarm, minutes) {
   return !alarm || alarm.periodInMinutes !== minutes;
 }
+
+export async function getSendNotifications() {
+  const { config } = await messenger.storage.local.get({ config: null });
+  return config?.sendNotifications;
+}
+
+/**
+ * Decodes Modified IMAP UTF-7 folder paths commonly returned by Thunderbird 128.
+ * Automatically translates strings like "&ALc-" into "·" and handles all other special characters.
+ */
+export function decodeImapUtf7(str) {
+  if (!str) return '';
+  
+  // If there's no IMAP UTF-7 marker (&), return early for lightning-fast performance
+  if (!str.includes('&')) return str;
+
+  // Regular expression to find any IMAP UTF-7 encoded blocks (e.g., &ALc-)
+  return str.replace(/&([A-Za-z0-9+,/]*)-/g, (match, g1) => {
+    // An empty marker "&-" means a literal "&" character in IMAP
+    if (g1 === '') return '&';
+
+    try {
+      // 1. Convert IMAP's modified Base64 comma (,) back to standard Base64 slash (/)
+      const base64 = g1.replaceAll(',', '/');
+      
+      // 2. Decode the Base64 string into binary data
+      const binary = atob(base64);
+      
+      // 3. IMAP UTF-7 encodes characters in UTF-16BE (2 bytes per character)
+      let decoded = '';
+      for (let i = 0; i < binary.length; i += 2) {
+        const charCode = (binary.charCodeAt(i) << 8) | binary.charCodeAt(i + 1);
+        decoded += String.fromCharCode(charCode);
+      }
+      return decoded;
+    } catch (e) {
+      // If decoding fails, return the original match safely
+      return match;
+    }
+  });
+}

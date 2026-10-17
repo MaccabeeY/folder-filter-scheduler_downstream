@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Folder Filter Scheduler for TB128 Button",
+  "description": "Provide a simplified \"Rules\" button that when clicked merely runs all rules.",
+  "version": "0.3.6.2",
+  "author": "MaccabeeY",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "folder-filter-scheduler@kayhan.dev.tb128.button",
+      "strict_min_version": "128.0"
+    }
+  },
+    "icons": {
+    "48": "icons/icon.svg",
+    "96": "icons/icon.svg"
+  },
+  "permissions": [
+    "activeTab"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Rules",
+    "default_icon": "icons/icon.svg",
+    "allowed_spaces": ["mail"]
+  }
+}

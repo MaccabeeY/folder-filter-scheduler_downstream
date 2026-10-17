@@ -22,7 +22,7 @@ import {
 import { ADDRESS_BOOK_FIELDS, ALL_ADDRESS_BOOKS } from '../src/contacts.js';
 import { diagnosticsFilename } from '../src/diagnostics.js';
 import { ACTIONS, ACTIONS_BY_ID, actionsOf, isTerminalAction, orderActions } from '../src/actions.js';
-import { ADVANCED_DEFAULTS, sanitizeAdvanced } from '../src/settings.js';
+import { ADVANCED_DEFAULTS, sanitizeAdvanced, decodeImapUtf7 } from '../src/settings.js';
 import { DEFAULT_ALLOWLIST, parseDomainList } from '../src/domains.js';
 import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
 import { folderDepth, folderMatchesFilter, resolveRuleFolders, treeGuides } from '../src/folders.js';
@@ -336,7 +336,7 @@ function guideBackground(guide) {
  */
 function paintFolderOption(opt, folder, { filtering = false, covered = false } = {}) {
   const depth = Math.max(1, folder.depth);
-  const name = filtering ? folder.path.replace(/^\//, '') : folder.name;
+  const name = decodeImapUtf7(filtering ? folder.path.replace(/^\//, '') : folder.name);
   const note = covered ? ' · included as a subfolder' : '';
   opt.textContent = `${name}${note}`;
   opt.setAttribute('aria-label', `${name}${note}`);
@@ -994,9 +994,10 @@ function collectConfig(rejected = []) {
   rejected.push(...advanced.problems);
   return {
     intervalMinutes: Math.max(1, Number($('#interval').value) || 10),
+    sendNotifications: $('#send-notifications').checked ? "1" : "0",
     advanced: advanced.settings,
     rules,
-    allowlist,
+    allowlist
   };
 }
 
@@ -1110,7 +1111,7 @@ async function save() {
   flash(
     (rejected.length > 0
       ? `Saved, with ${rejected.length} correction${rejected.length === 1 ? '' : 's'}: ${rejected.join('; ')}.`
-      : 'Saved. Schedule updated.') + note,
+      : 'Saved. Options updated.') + note,
     note !== '',
   );
 }
@@ -1215,6 +1216,9 @@ async function importRules(file) {
   if (allowlist?.length) $('#allowlist').value = allowlist.join('\n');
   if (intervalMinutes) $('#interval').value = intervalMinutes;
   if (advanced) fillAdvanced(advanced);
+  if (data?.sendNotifications !== undefined) {
+    $('#send-notifications').checked = data.sendNotifications === "1";
+  }
 
   const skipped = problems.length > 0 ? ` Skipped: ${problems.join('; ')}.` : '';
   flash(
@@ -1262,6 +1266,7 @@ async function init() {
   await loadTags();
   const { config } = await messenger.storage.local.get({ config: null });
   $('#interval').value = config?.intervalMinutes ?? 10;
+  $('#send-notifications').checked = config?.sendNotifications === "1";
   const rules = config?.rules?.length ? config.rules : [{}];
 
   // On a first visit with many rules, start collapsed: a folder multi-select

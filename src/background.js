@@ -7,7 +7,7 @@ import { ALL_ADDRESS_BOOKS, addressSetFromVCards } from './contacts.js';
 import { LOG_CAP, appendEntries, buildReport, makeEntry } from './diagnostics.js';
 import { actionsOf, runActions } from './actions.js';
 import { planScan, queryBoundsFor, stampScan } from './scan.js';
-import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced } from './settings.js';
+import { ADVANCED_DEFAULTS, alarmNeedsReset, sanitizeAdvanced, getSendNotifications  } from './settings.js';
 import { createRunner } from './runner.js';
 import { createHeaderReads } from './headers.js';
 import { resolveRuleFolders } from './folders.js';
@@ -345,21 +345,28 @@ async function normalize(messageHeader, fetchFull, headerReads) {
 }
 
 /** Walk any paginated MessageList (a query result or a menu selection). */
-async function* eachMessage(list) {
+async function eachMessage(list, callback) {
   let page = list;
   while (page) {
-    for (const m of page.messages ?? []) yield m;
+    for (const m of page.messages ?? []) {
+      // Execute the processing block inline for each message
+      await callback(m);
+    }
     if (!page.id) break;
     page = await messenger.messages.continueList(page.id);
   }
 }
 
 /** Iterate a folder, optionally bounded by Date on either side. */
-async function* messagesInFolder(folderId, { fromDate, toDate } = {}) {
+async function messagesInFolder(folderId, bounds = {}, callback) {
+  const { fromDate, toDate } = bounds;
   const query = { folderId, autoPaginationTimeout: 0 };
   if (fromDate instanceof Date) query.fromDate = fromDate;
   if (toDate instanceof Date) query.toDate = toDate;
-  yield* eachMessage(await messenger.messages.query(query));
+  
+  // Await the initial query page block and hand the execution stack over
+  const initialList = await messenger.messages.query(query);
+  await eachMessage(initialList, callback);
 }
 
 /**
@@ -396,12 +403,15 @@ async function runRule(rule, folderIds, runState, manual, addressBooks, settings
   for (const folderId of folderIds) {
     const matchedIds = [];
     try {
-      for await (const header of messagesInFolder(folderId, bounds)) {
+      // We are processing headers ourselves via a callback to maintain clear debugger traces
+      await messagesInFolder(folderId, bounds, async (header) => {
         scanned += 1;
         const message = await normalize(header, fetchFull, headerReads);
-        if (!message) continue;
-        if (evaluateRule(message, rule, { now: startedAt, addressBooks })) matchedIds.push(header.id);
-      }
+        if (!message) return; // 'return' replaces 'continue' inside a callback scope
+        if (evaluateRule(message, rule, { now: startedAt, addressBooks })) {
+          matchedIds.push(header.id);
+        }
+      });
     } catch (e) {
       warn(`scan failed for folder ${folderId} in rule "${rule.name}"`, e);
       scanFailed = true;
@@ -511,12 +521,11 @@ async function runAllRules(
   }
 
   await saveRunState(runState);
-  logUnless(
-    quietRun && total === 0,
-    `run (${reason}) complete: ${total} message(s) affected across ` +
-      `${selected.length} of ${rules.length} rule(s)`,
-  );
+  let msg = `run (${reason}) complete: ${total} message(s) affected across ` +
+      `${selected.length} of ${rules.length} rule(s)`;
+  logUnless( quietRun && total === 0, msg);
   await flushLog();
+  if (total > 0) sendBalloon(msg, `Folder Filter Scheduler processed ${total} message(s)`);
   return total;
 }
 
@@ -719,20 +728,20 @@ async function takePayload(token) {
   return stored?.[key] ?? null;
 }
 
-/** Collect addresses per harvest header across every selected message. */
 async function addressesFromSelection(selectedMessages) {
   const byField = Object.fromEntries(HARVEST_FIELDS.map((f) => [f, []]));
   let scanned = 0;
   let unreadable = 0;
   const headerReads = await newHeaderReads();
 
-  for await (const header of eachMessage(selectedMessages)) {
+  // Forward the harvest logic block down into the paginator
+  await eachMessage(selectedMessages, async (header) => {
     scanned += 1;
     try {
       const headers = await headerReads.read(header.id, header.folder?.accountId);
       if (!headers) {
         unreadable += 1;
-        continue;
+        return; // 'return' replaces 'continue' inside a callback scope
       }
       for (const field of HARVEST_FIELDS) {
         const found = (headers[field] ?? []).flatMap((v) => addressesFromHeaderValue(v));
@@ -747,7 +756,8 @@ async function addressesFromSelection(selectedMessages) {
       warn('could not read headers for message', header.id, e);
       unreadable += 1;
     }
-  }
+  });
+
   return { byField, scanned, unreadable };
 }
 
@@ -960,6 +970,41 @@ messenger.runtime.onStartup.addListener(() => {
 });
 applySettings();
 registerMenu();
+
+// =========================================================================
+// SATELLITE BUTTON TRIGGER RECEIVER
+// =========================================================================
+browser.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  // Security check: Only allow messages from your specific button add-on ID
+  if (sender.id === "folder-filter-scheduler@kayhan.dev.tb128.button") {
+    if (message.action === "RUN_ALL_RULES") {
+      runAllRules('manual')
+        .then((affected) => {
+          sendResponse({ ok: true, affected: affected });
+        })
+        .catch((error) => {
+          console.error("Failed to run rules via remote trigger:", error);
+          sendResponse({ ok: false, error: error.message });
+        });
+      return true;
+    }
+  }
+});
+
+/**
+ * Triggers a balloon/toast notification in the lower right corner of the screen.
+ * @param {string} titleText - The bold heading of the balloon.
+ * @param {string} bodyText - The description message underneath.
+ */
+async function sendBalloon(bodyText, titleText = "Folder Filter Scheduler") {
+  if (await getSendNotifications() === "1")
+    messenger.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon.svg",
+      title: titleText,
+      message: bodyText
+    });
+}
 
 // Re-exported so the options UI can render the supported field list from one source of truth.
 export { FIELDS };
