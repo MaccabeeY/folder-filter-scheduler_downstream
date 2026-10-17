@@ -1,7 +1,7 @@
 name: Sync Upstream Tags
 
 on:
-  workflow_dispatch: # This adds a manual "Run" button to the GitHub web interface
+  workflow_dispatch:
 
 jobs:
   sync-tags:
@@ -11,18 +11,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync Tags from Upstream
         run: |
-          # 1. Find the upstream URL from GitHub's API context
           UPSTREAM_URL="https://github.com{{ github.event.repository.parent.full_name }}.git"
-          
-          # 2. Add the upstream remote
           git remote add upstream "$UPSTREAM_URL"
-          
-          # 3. Fetch tags
           git fetch upstream --tags
-          
-          # 4. Push tags back to your own fork
           git push origin --tags
