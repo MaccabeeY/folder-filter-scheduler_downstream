@@ -1,7 +1,7 @@
 name: Sync Upstream Tags
 
 on:
-  workflow_dispatch:
+  push: # Changing this forces the sync to run the second you save the file
 
 jobs:
   sync-tags:
