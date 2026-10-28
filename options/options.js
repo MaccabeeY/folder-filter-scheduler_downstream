@@ -17,15 +17,18 @@ import {
   PRIORITY_FIELD,
   PRIORITY_IS,
   PRIORITY_LEVELS,
+  AUTH_FIELD,
+  AUTH_PASSES,
+  AUTH_METHODS,
   ageDays,
 } from '../src/matcher.js';
 import { ADDRESS_BOOK_FIELDS, ALL_ADDRESS_BOOKS } from '../src/contacts.js';
 import { diagnosticsFilename } from '../src/diagnostics.js';
 import { ACTIONS, ACTIONS_BY_ID, actionsOf, isTerminalAction, orderActions } from '../src/actions.js';
-import { ADVANCED_DEFAULTS, sanitizeAdvanced, decodeImapUtf7 } from '../src/settings.js';
+import { ADVANCED_DEFAULTS, dohOrigin, sanitizeAdvanced, decodeImapUtf7 } from '../src/settings.js';
 import { DEFAULT_ALLOWLIST, parseDomainList } from '../src/domains.js';
 import { buildExport, exportFilename, sanitizeImport } from '../src/rules.js';
-import { folderDepth, folderMatchesFilter, resolveRuleFolders, treeGuides } from '../src/folders.js';
+import { collapsedTree, folderDepth, folderMatchesFilter, resolveRuleFolders, treeGuides } from '../src/folders.js';
 import { describeCron, nextRun, parseCron } from '../src/cron.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -150,6 +153,45 @@ function requestBookAccess() {
 }
 
 /**
+ * The own DKIM check sends DNS lookups to the server chosen under Advanced, so
+ * it needs that server as an optional host permission. It is asked for only
+ * when someone uses an authentication condition.
+ */
+let dnsAccess = false;
+
+async function loadDnsAccess() {
+  const origin = dohOrigin($('#adv-auth-server').value);
+  try {
+    dnsAccess = origin ? await messenger.permissions.contains({ origins: [origin] }) : false;
+  } catch {
+    dnsAccess = false;
+  }
+}
+
+function refreshDnsRows() {
+  for (const row of rulesEl.querySelectorAll('.condition')) row.syncDns?.();
+}
+
+function requestDnsAccess() {
+  const origin = dohOrigin($('#adv-auth-server').value);
+  if (!origin) return;
+  // permissions.request must be called directly from the click, before any await.
+  messenger.permissions
+    .request({ origins: [origin] })
+    .then(async (granted) => {
+      await loadDnsAccess();
+      refreshDnsRows();
+      flash(
+        granted
+          ? 'DNS server access allowed. DKIM and DMARC conditions can now run.'
+          : 'DNS server access was not allowed. DKIM and DMARC conditions will not match until it is.',
+        !granted,
+      );
+    })
+    .catch((e) => flash(`Could not request DNS server access: ${e.message}`, true));
+}
+
+/**
  * Listing the user's tags needs its own optional permission, asked for only
  * when someone adds a tag action. Applying a tag does not: that goes through
  * messages.update, which the add-on already holds. So a rule whose tag was
@@ -219,24 +261,27 @@ function requestTagAccess() {
  * what is saved or exported.
  */
 const COLLAPSED_KEY = 'ffs.collapsedRules';
+/** Accounts and folders collapsed in the folder picker, shared by every rule. Also a view preference. */
+const COLLAPSED_FOLDERS_KEY = 'ffs.collapsedFolders';
 
-function loadCollapsed() {
+function loadCollapsed(key = COLLAPSED_KEY) {
   try {
-    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]'));
+    return new Set(JSON.parse(localStorage.getItem(key) ?? '[]'));
   } catch {
     return new Set();
   }
 }
 
-function saveCollapsed(ids) {
+function saveCollapsed(ids, key = COLLAPSED_KEY) {
   try {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
+    localStorage.setItem(key, JSON.stringify([...ids]));
   } catch {
     // A missing localStorage only costs the preference, never the rules.
   }
 }
 
 let collapsed = loadCollapsed();
+const collapsedFolders = loadCollapsed(COLLAPSED_FOLDERS_KEY);
 
 /** One picker entry. `label` is the full "Account: /path" form, for tooltips. */
 function folderEntry(folder, accountName) {
@@ -330,16 +375,31 @@ function guideBackground(guide) {
 }
 
 /**
+ * The arrow in front of an account and of a folder that has subfolders. An
+ * option holds plain text, so the size comes from the character. U+FE0E keeps
+ * macOS from drawing the right arrow as a colored emoji.
+ */
+const ARROWS = { open: '\u25BC\uFE0E ', closed: '\u25B6\uFE0E ' };
+/** A collapsed account sits in `collapsedFolders` under this prefix and its id. */
+const ACCOUNT_PREFIX = 'account:';
+
+/**
  * Write one folder option. Indentation is CSS padding, so levels line up and a
  * screen reader hears the name rather than blank space. While filtering, the
- * tree is gone, so the option shows the whole path and no lines.
+ * tree is gone, so the option shows the whole path, no lines, and no arrow.
+ *
+ * `arrow` is `open` or `closed` for a folder with subfolders, and `inside`
+ * counts the selected folders a collapsed one hides.
  */
-function paintFolderOption(opt, folder, { filtering = false, covered = false } = {}) {
+function paintFolderOption(opt, folder, { filtering = false, covered = false, arrow = null, inside = 0 } = {}) {
   const depth = Math.max(1, folder.depth);
   const name = decodeImapUtf7(filtering ? folder.path.replace(/^\//, '') : folder.name);
-  const note = covered ? ' · included as a subfolder' : '';
-  opt.textContent = `${name}${note}`;
-  opt.setAttribute('aria-label', `${name}${note}`);
+  let note = covered ? ' · included as a subfolder' : '';
+  if (inside) note += ` · ${inside} selected inside`;
+  opt.textContent = `${arrow ? ARROWS[arrow] : ''}${name}${note}`;
+  const state = arrow ? `, ${arrow === 'open' ? 'expanded' : 'collapsed'}` : '';
+  opt.setAttribute('aria-label', `${name}${state}${note}`);
+  opt.dataset.arrow = arrow ?? '';
   opt.style.paddingInlineStart = filtering ? '' : `${(depth - 1) * INDENT_EM + 0.4}em`;
   const guide = guides.get(folder.id);
   const lines = !filtering && guide && guide.through.length > 0 ? guideBackground(guide) : null;
@@ -363,6 +423,7 @@ function fillFolderSelect(select, selectedIds = []) {
     if (!group || group.dataset.accountId !== f.accountId) {
       group = document.createElement('optgroup');
       group.label = f.accountName || 'Account';
+      group.dataset.name = group.label;
       group.dataset.accountId = f.accountId ?? '';
       select.append(group);
     }
@@ -407,33 +468,97 @@ function wireFolderPicker(node) {
     return new Set(scanned.filter((id) => !chosen.includes(id)));
   };
 
-  const updateCount = () => {
-    const selected = [...select.selectedOptions];
-    const hidden = selected.filter((o) => o.hidden).length;
-    const covered = coveredIds();
-    count.textContent =
-      `${selected.length} selected` +
-      (covered.size ? `, ${covered.size} more as subfolders` : '') +
-      (hidden ? `, ${hidden} hidden by the filter` : '');
-    return covered;
-  };
   const applyFilter = () => {
     const text = filter.value;
     const filtering = text.trim() !== '';
-    const covered = updateCount();
+    const covered = coveredIds();
+    // A filter shows every match, so it opens collapsed folders while it runs.
+    const tree = collapsedTree(folders, filtering ? new Set() : collapsedFolders);
+    const selectedIds = [...select.selectedOptions].map((o) => o.value);
+    const insideOf = (folder) => selectedIds.filter((id) => {
+      const other = byId.get(id);
+      return other?.accountId === folder.accountId && other.path.startsWith(`${folder.path}/`);
+    }).length;
+    let filtered = 0;
+    let folded = 0;
     for (const group of select.querySelectorAll('optgroup')) {
+      const accountKey = ACCOUNT_PREFIX + group.dataset.accountId;
+      const accountClosed = !filtering && collapsedFolders.has(accountKey);
       let visible = 0;
       for (const opt of group.children) {
         const folder = byId.get(opt.value);
-        opt.hidden = !folderMatchesFilter(folder, text);
+        const matches = folderMatchesFilter(folder, text);
+        opt.hidden = !matches || accountClosed || tree.hidden.has(opt.value);
         if (!opt.hidden) visible += 1;
-        if (folder) paintFolderOption(opt, folder, { filtering, covered: covered.has(folder.id) });
+        if (opt.selected && !matches) filtered += 1;
+        else if (opt.selected && opt.hidden) folded += 1;
+        if (!folder) continue;
+        let arrow = null;
+        if (!filtering && tree.parents.has(folder.id)) arrow = collapsedFolders.has(folder.id) ? 'closed' : 'open';
+        const inside = arrow === 'closed' ? insideOf(folder) : 0;
+        paintFolderOption(opt, folder, { filtering, covered: covered.has(folder.id), arrow, inside });
       }
-      group.hidden = visible === 0;
+      // A collapsed account keeps its heading, so you can open it again.
+      group.hidden = visible === 0 && !accountClosed;
+      const inside = accountClosed ? [...group.children].filter((o) => o.selected).length : 0;
+      group.label =
+        (filtering ? '' : ARROWS[accountClosed ? 'closed' : 'open']) +
+        group.dataset.name +
+        (inside ? ` · ${inside} selected inside` : '');
     }
+    count.textContent =
+      `${selectedIds.length} selected` +
+      (covered.size ? `, ${covered.size} more as subfolders` : '') +
+      (filtered ? `, ${filtered} hidden by the filter` : '') +
+      (folded ? `, ${folded} in collapsed folders` : '');
     // With no filter, "all matching" would be every folder in every account.
     selectMatching.disabled = !filtering;
   };
+
+  // A click on the arrow collapses or expands the folder instead of selecting
+  // it. The arrow is the first character after the indent, so the click lands
+  // on it when it falls within about one character of the padding edge.
+  // Every account and every folder with subfolders, for "Collapse all".
+  // "Expand all" clears the set, which also forgets folders that no longer exist.
+  $('.folder-collapse-all', node).addEventListener('click', () => {
+    const accounts = new Set(folders.map((f) => ACCOUNT_PREFIX + (f.accountId ?? '')));
+    for (const id of [...accounts, ...collapsedTree(folders).parents]) collapsedFolders.add(id);
+    saveCollapsed(collapsedFolders, COLLAPSED_FOLDERS_KEY);
+    refreshFolderPickers();
+  });
+  $('.folder-expand-all', node).addEventListener('click', () => {
+    collapsedFolders.clear();
+    saveCollapsed(collapsedFolders, COLLAPSED_FOLDERS_KEY);
+    refreshFolderPickers();
+  });
+
+  // A click anywhere on an account heading collapses or expands the account.
+  select.addEventListener('mousedown', (event) => {
+    if (filter.value.trim() !== '') return;
+    let id;
+    if (event.target instanceof HTMLOptGroupElement) {
+      id = ACCOUNT_PREFIX + event.target.dataset.accountId;
+    } else {
+      const opt = event.target.closest?.('option');
+      if (!opt?.dataset.arrow) return;
+      const style = getComputedStyle(opt);
+      const start = opt.getBoundingClientRect().left + parseFloat(style.paddingInlineStart);
+      const x = event.clientX - start;
+      if (x < -2 || x > parseFloat(style.fontSize) * 1.4) return;
+      id = opt.value;
+    }
+    event.preventDefault();
+    // If the list still changes the selection on this click, put it back.
+    const before = new Set([...select.selectedOptions].map((o) => o.value));
+    setTimeout(() => {
+      for (const o of select.options) o.selected = before.has(o.value);
+      applyFilter();
+    }, 0);
+    if (collapsedFolders.has(id)) collapsedFolders.delete(id);
+    else collapsedFolders.add(id);
+    saveCollapsed(collapsedFolders, COLLAPSED_FOLDERS_KEY);
+    refreshFolderPickers();
+  });
 
   filter.addEventListener('input', applyFilter);
   filter.addEventListener('keydown', (e) => {
@@ -452,7 +577,13 @@ function wireFolderPicker(node) {
   node.addEventListener('change', (e) => {
     if (e.target.closest?.('.actions')) applyFilter();
   });
+  node.refreshFolders = applyFilter;
   applyFilter();
+}
+
+/** Every rule shares the collapsed folders, so a change repaints each picker. */
+function refreshFolderPickers() {
+  for (const node of rulesEl.querySelectorAll('.rule')) node.refreshFolders?.();
 }
 
 /** A domain-list condition can watch several headers at once. */
@@ -475,12 +606,16 @@ function fillDomainFieldSelect(select, cond) {
   if (!DOMAIN_FIELD_SETS.some((s) => s.value === current)) select.value = 'reply-to,from';
 }
 
+/** Fields whose name in the list differs from their stored name. */
+const FIELD_LABELS = { [AUTH_FIELD]: 'authentication' };
+const fieldLabel = (field) => FIELD_LABELS[field] ?? field;
+
 function fillFieldSelect(select, value) {
   select.innerHTML = '';
   for (const field of FIELDS) {
     const opt = document.createElement('option');
     opt.value = field;
-    opt.textContent = field;
+    opt.textContent = fieldLabel(field);
     opt.selected = field === value;
     select.append(opt);
   }
@@ -500,7 +635,7 @@ const DOMAIN_SET_REASON = 'Works only with the "domain is in list" operator.';
 function greyOtherFields(select, mode) {
   const offered = new Set([...select.options].map((o) => o.value));
   const [bothHeaders] = DOMAIN_FIELD_SETS;
-  for (const { value, label } of [...FIELDS.map((f) => ({ value: f, label: f })), bothHeaders]) {
+  for (const { value, label } of [...FIELDS.map((f) => ({ value: f, label: fieldLabel(f) })), bothHeaders]) {
     if (offered.has(value)) continue;
     const isSet = value === bothHeaders.value;
     const opt = document.createElement('option');
@@ -521,6 +656,7 @@ const GREY_OPERATORS = {
   state: { suffix: '', reason: 'Works only with the read, star, and junk fields.' },
   tag: { suffix: ' (tag field only)', reason: 'Works only with the tag field.' },
   priority: { suffix: '', reason: 'Works only with the priority field.' },
+  auth: { suffix: ' (authentication only)', reason: 'Works only with the authentication field.' },
   plain: { suffix: ' (header fields only)', reason: 'Works only with a header field, such as from or subject.' },
 };
 const GREY_OPERATOR_LABELS = {
@@ -543,6 +679,9 @@ function renderCondition(container, cond = {}) {
   $('.cond-days', node).value = ageDays(cond) ?? '';
   // A new priority row starts on High: the level people most often filter on.
   $('.cond-priority', node).value = PRIORITY_LEVELS.includes(cond.value) ? cond.value : 'high';
+  // A new authentication row starts on DKIM: the check the add-on runs itself.
+  $('.cond-auth', node).value = AUTH_METHODS.includes(cond.value) ? cond.value : 'dkim';
+  $('.cond-auth-grant', node).addEventListener('click', requestDnsAccess);
 
   // The row changes shape with its field and operator. A domain list needs a
   // textarea, not a one-line input: a harvested list runs to hundreds of
@@ -583,6 +722,13 @@ function renderCondition(container, cond = {}) {
   };
 
   let mode = null; // 'list' | 'address' | 'plain': decides which fields are offered
+  // Operators the field rules out move under this heading at the end of the
+  // list. Thunderbird draws a disabled option in the normal text color in
+  // some menus, so the heading, not the color, sets them apart.
+  const opOrder = [...op.options];
+  const otherOps = document.createElement('optgroup');
+  otherOps.label = 'Works with other fields';
+  otherOps.disabled = true;
   const syncRow = () => {
     const isList = op.value === DOMAIN_IN_LIST;
     const isBook = op.value === IN_ADDRESS_BOOK;
@@ -601,19 +747,27 @@ function renderCondition(container, cond = {}) {
 
     // Age, the three states, tag, and priority each take their own operators
     // and nothing else. Every other field takes the rest. An operator that the
-    // field rules out stays in the list, greyed, with the reason on hover.
+    // field rules out stays in the list, greyed and under its own heading, with
+    // the reason on hover.
     const field = fieldSelect.value;
     const isAge = field === AGE_FIELD;
     const isState = STATE_FIELDS.includes(field);
     const isTag = field === TAG_FIELD;
     const isPriority = field === PRIORITY_FIELD;
+    const isAuth = field === AUTH_FIELD;
     const kindOf = (value) => {
       if (value in AGE_OPERATORS) return 'age';
       if (value in STATE_OPERATORS) return 'state';
       if (value === PRIORITY_IS) return 'priority';
+      if (value === AUTH_PASSES) return 'auth';
       return value === HAS_TAG ? 'tag' : 'plain';
     };
-    const kind = isAge ? 'age' : isState ? 'state' : isTag ? 'tag' : isPriority ? 'priority' : 'plain';
+    let kind = 'plain';
+    if (isAge) kind = 'age';
+    else if (isState) kind = 'state';
+    else if (isTag) kind = 'tag';
+    else if (isPriority) kind = 'priority';
+    else if (isAuth) kind = 'auth';
     for (const option of op.options) {
       const needs = kindOf(option.value);
       option.dataset.label ??= option.textContent;
@@ -628,12 +782,18 @@ function renderCondition(container, cond = {}) {
         option.textContent = option.dataset.label;
       }
     }
+    const chosen = op.value;
+    for (const option of opOrder) if (!option.disabled) op.append(option);
+    for (const option of opOrder) if (option.disabled) otherOps.append(option);
+    op.append(otherOps);
+    op.value = chosen;
     if (kindOf(op.value) !== kind) {
       op.value = {
         age: AGE_OPERATORS.olderThan,
         state: STATE_OPERATORS.isOn,
         tag: HAS_TAG,
         priority: PRIORITY_IS,
+        auth: AUTH_PASSES,
         plain: 'contains',
       }[kind];
     }
@@ -644,9 +804,14 @@ function renderCondition(container, cond = {}) {
     if (isState) negate.checked = false;
 
     $('.cond-domains', node).classList.toggle('hidden', !isList);
-    $('.cond-value', node).classList.toggle('hidden', isList || isAge || isAddress || isState || isTag || isPriority);
+    $('.cond-value', node).classList.toggle(
+      'hidden', isList || isAge || isAddress || isState || isTag || isPriority || isAuth,
+    );
     $('.cond-priority', node).classList.toggle('hidden', !isPriority);
     $('.cond-priority-hint', node).classList.toggle('hidden', !isPriority);
+    $('.cond-auth', node).classList.toggle('hidden', !isAuth);
+    $('.cond-auth-hint', node).classList.toggle('hidden', !isAuth);
+    node.syncDns();
     $('.cond-hint', node).classList.toggle('hidden', !isName);
     $('.cond-state-hint', node).classList.toggle('hidden', !isState && !isTag);
     $('.cond-days', node).classList.toggle('hidden', !isAge);
@@ -654,6 +819,14 @@ function renderCondition(container, cond = {}) {
     node.syncBooks();
     node.syncTags();
   };
+  // The grant button shows only while the own check is on and the DNS server
+  // is not allowed yet, because DKIM and DMARC never match until then.
+  node.syncDns = () => {
+    const isAuth = fieldSelect.value === AUTH_FIELD;
+    const wantsDns = $('#adv-auth-own').checked && $('.cond-auth', node).value !== 'spf';
+    $('.cond-auth-grant', node).classList.toggle('hidden', !isAuth || !wantsDns || dnsAccess);
+  };
+  $('.cond-auth', node).addEventListener('change', node.syncDns);
   op.addEventListener('change', syncRow);
   fieldSelect.addEventListener('change', syncRow);
   syncRow();
@@ -841,6 +1014,9 @@ function ruleSummary(node) {
       return `${negate ? 'does not have' : 'has'} tag ${tagLabel(c.dataset.tagKey)}`;
     }
     if (field === PRIORITY_FIELD) return `priority ${negate ? 'is not' : 'is'} ${$('.cond-priority', c).value}`;
+    if (field === AUTH_FIELD) {
+      return `${$('.cond-auth', c).value.toUpperCase()} ${negate ? 'does not pass' : 'passes'}`;
+    }
     if ($('.cond-op', c).value === IN_ADDRESS_BOOK) {
       return `${field} ${negate}in ${bookLabel(c.dataset.bookId)}`;
     }
@@ -970,6 +1146,8 @@ function collectConfig(rejected = []) {
           if (!condition.tagKey) rejected.push('a tag condition has no tag chosen, so it will not match');
         } else if (condition.field === PRIORITY_FIELD) {
           condition.value = $('.cond-priority', c).value;
+        } else if (condition.field === AUTH_FIELD) {
+          condition.value = $('.cond-auth', c).value;
         } else if (operator === IN_ADDRESS_BOOK) {
           condition.addressBookId = c.dataset.bookId || ALL_ADDRESS_BOOKS;
         } else if (operator === DOMAIN_IN_LIST) {
@@ -997,7 +1175,7 @@ function collectConfig(rejected = []) {
     sendNotifications: $('#send-notifications').checked ? "1" : "0",
     advanced: advanced.settings,
     rules,
-    allowlist
+    allowlist,
   };
 }
 
@@ -1013,6 +1191,10 @@ const ADVANCED_INPUTS = {
   catchUpEveryMinutes: '#adv-catchup-every',
   catchUpLookbackDays: '#adv-catchup-days',
   scanOverlapMinutes: '#adv-overlap',
+  authOwnCheck: '#adv-auth-own',
+  authDohServer: '#adv-auth-server',
+  authPrefer: '#adv-auth-prefer',
+  authTrustedServers: '#adv-auth-trusted',
 };
 
 function fillAdvanced(settings) {
@@ -1021,6 +1203,8 @@ function fillAdvanced(settings) {
     if (el.type === 'checkbox') el.checked = settings[key] === true;
     else el.value = settings[key];
   }
+  // The DNS server or the own check might have changed.
+  return loadDnsAccess().then(refreshDnsRows);
 }
 
 /** Raw values straight from the inputs; settings.js does the clamping. */
@@ -1071,6 +1255,19 @@ async function save() {
     $('.rule-cron', badSchedule).focus();
     const name = $('.rule-name', badSchedule).value.trim() || 'Untitled rule';
     flash(`Not saved: the schedule of “${name}” is not a valid cron expression.`, true);
+    return;
+  }
+
+  // An enabled rule without folders scans nothing, yet the card looks active.
+  // A disabled one saves, so a draft can wait for its folders.
+  const noFolders = [...rulesEl.querySelectorAll('.rule')].find(
+    (node) => $('.rule-enabled', node).checked && $('.rule-folders', node).selectedOptions.length === 0,
+  );
+  if (noFolders) {
+    setCollapsed(noFolders, false);
+    $('.folder-filter', noFolders).focus();
+    const name = $('.rule-name', noFolders).value.trim() || 'Untitled rule';
+    flash(`Not saved: choose a folder for “${name}”, or turn the rule off.`, true);
     return;
   }
 
@@ -1265,6 +1462,12 @@ async function init() {
   await loadAddressBooks();
   await loadTags();
   const { config } = await messenger.storage.local.get({ config: null });
+  // Before the rules, because an authentication row reads the own check
+  // setting and the DNS server access.
+  await fillAdvanced(sanitizeAdvanced(config?.advanced).settings);
+  for (const id of ['#adv-auth-own', '#adv-auth-server']) {
+    $(id).addEventListener('change', () => loadDnsAccess().then(refreshDnsRows));
+  }
   $('#interval').value = config?.intervalMinutes ?? 10;
   $('#send-notifications').checked = config?.sendNotifications === "1";
   const rules = config?.rules?.length ? config.rules : [{}];
@@ -1282,7 +1485,6 @@ async function init() {
     flash('Protected domains restored to defaults. Press Save to keep them.');
   });
 
-  fillAdvanced(sanitizeAdvanced(config?.advanced).settings);
   $('#reset-advanced').addEventListener('click', () => {
     fillAdvanced(ADVANCED_DEFAULTS);
     flash('Advanced settings restored to defaults. Press Save to keep them.');
@@ -1312,7 +1514,11 @@ async function init() {
   // Keep book rows honest if access is granted or revoked in the Add-ons Manager
   // while this page is open.
   const onPermissionsChanged = () =>
-    Promise.all([loadAddressBooks().then(refreshBookRows), loadTags().then(refreshTagRows)]);
+    Promise.all([
+      loadAddressBooks().then(refreshBookRows),
+      loadTags().then(refreshTagRows),
+      loadDnsAccess().then(refreshDnsRows),
+    ]);
   messenger.permissions.onAdded?.addListener(onPermissionsChanged);
   messenger.permissions.onRemoved?.addListener(onPermissionsChanged);
 
