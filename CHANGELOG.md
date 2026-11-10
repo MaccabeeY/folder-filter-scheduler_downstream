@@ -59,6 +59,82 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [DKIM Verifier](https://github.com/lieser/dkim_verifier) by Philippe Lieser,
   under the MIT license.
 
+### Added
+- **The interface is ready for translation.** Every text on the settings page,
+  the toolbar popup, the Add spam domains window, and the right-click menu
+  comes from `_locales/<lang>/messages.json`. A language without a file, or a
+  message a file leaves out, shows English. The diagnostics log and report
+  stay English. `docs/TRANSLATING.md` explains how to add a language.
+- **The interface in 7 more languages:** German, Spanish, French, Italian,
+  Japanese, Korean, and Simplified Chinese. Thunderbird picks the language of
+  its own interface. Thunderbird's own labels, such as the folder
+  **Properties** checkbox in **Common problems**, use Thunderbird's wording
+  for each language.
+
+### Fixed
+- **A rule that archives thousands of messages no longer stops the run.**
+  Move, copy, archive, and delete hand Thunderbird at most 200 messages per
+  call, one call after another. One archive of about 2600 messages finished
+  but never answered, so the rules after it never ran until the next run.
+  When an action needs more than one call, the diagnostics log records each
+  one, such as `rule "Work": archive 400 of 2609`, so a call that stops
+  answering shows where it stopped.
+
+## [0.4.1]
+
+### Added
+- **Collapse accounts and folders in the folder list.** Click an account name
+  to hide or show all of its folders. A folder with subfolders shows an arrow:
+  click the arrow to hide or show its subfolders, and click the name to select
+  the folder. A collapsed account or folder names how many selected folders it
+  hides, and the filter box still searches every folder. Each one stays
+  collapsed until you expand it, in every rule. **Expand** and **Collapse**
+  under the **Folders** label open or close every account and folder at once.
+
+- **The log counts SPF, DKIM, and DMARC results.** After the auth check line,
+  a run with an authentication condition logs how many messages passed, didn't
+  pass, or stayed unknown for each method, such as
+  `dmarc 1 pass, 9 not pass, 0 unknown`. The log still names no sender or
+  domain.
+
+### Changed
+- **An enabled rule needs a folder.** **Save** stops and names the rule when an
+  enabled rule has no folder, because that rule scans nothing. A disabled rule
+  still saves without folders.
+- **Trusted authentication servers take one name per line.** The setting under
+  **Advanced** is a text area like the domain list, so several servers are
+  easier to read. A list saved with commas still works.
+
+### Fixed
+- **Code text in hints uses a monospace font.** The options page showed header
+  names such as `Authentication-Results` and the example addresses in the hints
+  in a serif font, because it had no font rule for that text.
+- **Operators that don't fit the field sit under their own heading.** For the
+  authentication, priority, and tag fields, Thunderbird drew the operators you
+  can't choose in the normal text color, so they looked available. They now
+  move to the end of the menu, under "Works with other fields".
+- **The delete button stays on the condition row.** The operator list grew as
+  wide as its longest label, which pushed the button onto the next line.
+
+## [0.4.0]
+
+### Added
+- **SPF, DKIM, and DMARC conditions.** Choose the **authentication** field to
+  check whether SPF, DKIM, or DMARC passes, or with **not**, whether it fails.
+  SPF comes from the `Authentication-Results` header your provider adds. A
+  sender can forge that header, so the add-on verifies DKIM signatures itself
+  and works out DMARC from both. Only the topmost header counts, because your
+  provider adds it last. To check, the add-on downloads each full message the
+  condition looks at, once, and keeps the result for up to 90 days. For the
+  DKIM key it asks a DNS server over HTTPS: Cloudflare or Google, which you
+  allow the first time. If a check can't finish, the condition doesn't match,
+  and the add-on tries again 3 times in the first minute, then every 30 minutes
+  for 24 hours. Settings under **Advanced** turn the own check off, choose the
+  DNS server, choose which result wins when the two disagree, and name the
+  servers whose header you trust. The DKIM code comes from
+  [DKIM Verifier](https://github.com/lieser/dkim_verifier) by Philippe Lieser,
+  under the MIT license.
+
 ### Fixed
 - **Regex conditions see the original case** (#28). The add-on lowercased the
   header text and the pattern before a regex ran, so a case-sensitive group
