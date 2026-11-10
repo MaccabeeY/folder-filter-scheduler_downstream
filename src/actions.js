@@ -15,7 +15,36 @@
  * A rule can carry several actions. `terminal` marks the ones that consume the
  * message (its id stops being valid at the source folder afterwards), which is
  * why ordering is derived rather than trusted: see `orderActions`.
+ *
+ * `label` and `hint` are getters that read the message catalog, so they are in
+ * the user's language whenever the options page reads them.
  */
+
+import { t } from './i18n.js';
+
+/**
+ * How many messages one move, copy, archive, or delete call hands Thunderbird.
+ *
+ * A single archive of about 2600 messages finished its work but never
+ * answered, so the run waited and the rules after it never ran. Smaller calls,
+ * one after another, also keep a second archive from starting while the first
+ * is still busy: Thunderbird allows only one at a time.
+ */
+export const BATCH_SIZE = 200;
+
+/**
+ * Call `fn` on `ids` in groups of `BATCH_SIZE`, each after the one before.
+ *
+ * `onProgress(done, total)` follows each group, but only when there is more
+ * than one: a log line per group then shows where a call that never answers
+ * stopped, and a small action adds no lines at all.
+ */
+async function inBatches(ids, fn, onProgress) {
+  for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+    await fn(ids.slice(i, i + BATCH_SIZE));
+    if (ids.length > BATCH_SIZE) await onProgress?.(Math.min(i + BATCH_SIZE, ids.length), ids.length);
+  }
+}
 
 /**
  * Add a tag without disturbing the ones already on the message.
@@ -37,92 +66,97 @@ async function applyTag(messenger, ids, action) {
 export const ACTIONS = [
   {
     id: 'trash',
-    label: "Move to Trash (each message's own account)",
+    get label() { return t('action_trash'); },
     needsFolder: false,
     terminal: true,
-    hint: 'Routes each matched message to the Trash of its own account — safe across multi-account rules.',
-    apply: (messenger, ids) => messenger.messages.delete(ids, false),
+    get hint() { return t('action_trashHint'); },
+    apply: (messenger, ids, _action, onProgress) =>
+      inBatches(ids, (batch) => messenger.messages.delete(batch, false), onProgress),
   },
   {
     id: 'move',
-    label: 'Move to folder…',
+    get label() { return t('action_move'); },
     needsFolder: true,
     terminal: true,
-    hint: 'Sends every match to the chosen folder — including a folder in a different account (Thunderbird copies to the target account, then deletes the source).',
-    apply: (messenger, ids, action) => messenger.messages.move(ids, action.folderId),
+    get hint() { return t('action_moveHint'); },
+    apply: (messenger, ids, action, onProgress) =>
+      inBatches(ids, (batch) => messenger.messages.move(batch, action.folderId), onProgress),
   },
   {
     id: 'archive',
-    label: 'Archive',
+    get label() { return t('action_archive'); },
     needsFolder: false,
     terminal: true,
-    hint: "Archives each message the way Thunderbird's Archive button does, using its own account's archive settings. An account with archiving turned off keeps its mail in place.",
-    apply: (messenger, ids) => messenger.messages.archive(ids),
+    get hint() { return t('action_archiveHint'); },
+    apply: (messenger, ids, _action, onProgress) =>
+      inBatches(ids, (batch) => messenger.messages.archive(batch), onProgress),
   },
   {
     id: 'copy',
-    label: 'Copy to folder…',
+    get label() { return t('action_copy'); },
     needsFolder: true,
-    hint: 'Leaves the original in place and copies a duplicate into the chosen folder (works across accounts too).',
-    apply: (messenger, ids, action) => messenger.messages.copy(ids, action.folderId),
+    get hint() { return t('action_copyHint'); },
+    apply: (messenger, ids, action, onProgress) =>
+      inBatches(ids, (batch) => messenger.messages.copy(batch, action.folderId), onProgress),
   },
   {
     id: 'tag',
-    label: 'Tag as…',
+    get label() { return t('action_tag'); },
     needsTag: true,
-    hint: 'Adds one of your Thunderbird tags. Tags already on the message are kept, so several rules can tag the same mail.',
+    get hint() { return t('action_tagHint'); },
     apply: applyTag,
   },
   {
     id: 'markRead',
-    label: 'Mark as read',
+    get label() { return t('action_markRead'); },
     needsFolder: false,
-    hint: 'Marks matches as read without moving them.',
+    get hint() { return t('action_markReadHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { read: true }))),
   },
   {
     id: 'markUnread',
-    label: 'Mark as unread',
+    get label() { return t('action_markUnread'); },
     needsFolder: false,
-    hint: 'Marks matches as unread without moving them.',
+    get hint() { return t('action_markUnreadHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { read: false }))),
   },
   {
     id: 'markFlagged',
-    label: 'Add star',
+    get label() { return t('action_markFlagged'); },
     needsFolder: false,
-    hint: 'Adds a star to matches without moving them.',
+    get hint() { return t('action_markFlaggedHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { flagged: true }))),
   },
   {
     id: 'markUnflagged',
-    label: 'Remove star',
+    get label() { return t('action_markUnflagged'); },
     needsFolder: false,
-    hint: 'Removes the star from matches without moving them.',
+    get hint() { return t('action_markUnflaggedHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { flagged: false }))),
   },
   {
     id: 'markJunk',
-    label: 'Mark as junk',
+    get label() { return t('action_markJunk'); },
     needsFolder: false,
-    hint: 'Marks matches as junk (does not move them — Thunderbird’s junk handling decides the rest).',
+    get hint() { return t('action_markJunkHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { junk: true }))),
   },
   {
     id: 'markNotJunk',
-    label: 'Mark as not junk',
+    get label() { return t('action_markNotJunk'); },
     needsFolder: false,
-    hint: 'Removes the junk mark from matches without moving them.',
+    get hint() { return t('action_markNotJunkHint'); },
     apply: (messenger, ids) => Promise.all(ids.map((id) => messenger.messages.update(id, { junk: false }))),
   },
   {
     id: 'deletePermanently',
-    label: 'Delete permanently',
+    get label() { return t('action_deletePermanently'); },
     needsFolder: false,
     terminal: true,
     danger: true,
-    hint: 'Skips the Trash and deletes matches immediately. This cannot be undone.',
-    apply: (messenger, ids) => messenger.messages.delete(ids, true),
+    get hint() { return t('action_deletePermanentlyHint'); },
+    apply: (messenger, ids, _action, onProgress) =>
+      inBatches(ids, (batch) => messenger.messages.delete(batch, true), onProgress),
   },
 ];
 
@@ -156,8 +190,13 @@ export function orderActions(actions) {
   return [...list.filter((a) => !isTerminalAction(a)), ...list.filter(isTerminalAction)];
 }
 
-/** Execute a configured action against the matched message ids. No-op on empty input. */
-export async function runAction(messenger, ids, action) {
+/**
+ * Execute a configured action against the matched message ids. No-op on empty input.
+ *
+ * `onProgress(done, total)` is told about each group of a batched action. See
+ * `inBatches`.
+ */
+export async function runAction(messenger, ids, action, onProgress) {
   if (!ids || ids.length === 0) return;
   const def = ACTIONS_BY_ID[action?.type];
   if (!def) throw new Error(`Unknown action: ${action?.type}`);
@@ -167,20 +206,21 @@ export async function runAction(messenger, ids, action) {
   if (def.needsTag && !action.tagKey) {
     throw new Error(`Action "${def.id}" requires a tag`);
   }
-  await def.apply(messenger, ids, action);
+  await def.apply(messenger, ids, action, onProgress);
 }
 
 /**
  * Run every action of a rule against the same matched ids, terminal action last.
  *
  * Sequential on purpose: "tag, then move" has to finish tagging before the
- * message leaves the folder.
+ * message leaves the folder. `onProgress(action, done, total)` names the
+ * action each group belongs to.
  */
-export async function runActions(messenger, ids, actions) {
+export async function runActions(messenger, ids, actions, onProgress) {
   if (!ids || ids.length === 0) return;
   const ordered = orderActions(actions);
   if (ordered.length === 0) throw new Error('Rule has no action');
   for (const action of ordered) {
-    await runAction(messenger, ids, action);
+    await runAction(messenger, ids, action, (done, total) => onProgress?.(action, done, total));
   }
 }
